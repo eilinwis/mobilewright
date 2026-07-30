@@ -144,6 +144,9 @@ function matchesStrategy(
     case 'role':
       if (!matchesRole(node, strategy.value)) return false;
       if (strategy.name !== undefined) {
+        // Accessible-name order (label before text) is intentionally the reverse of
+        // the `text` locator above: an explicit label/accessibilityLabel outranks
+        // displayed text, mirroring ARIA accessible-name computation.
         const nodeLabel = node.label ?? node.text ?? '';
         if (strategy.name instanceof RegExp) {
           return strategy.name.test(nodeLabel);
@@ -184,7 +187,7 @@ export const ROLE_TYPE_MAP = {
   textfield: ['textfield', 'securetextfield', 'searchfield', 'edittext', 'appcompatedittext', 'textinputedittext', 'reactedittext'],
   text: ['statictext', 'textview', 'appcompattextview', 'materialtextview', 'text', 'reacttextview'],
   image: ['image', 'imageview', 'appcompatimageview', 'shapeableimageview', 'reactimageview'],
-  switch: ['switch', 'toggle'],
+  switch: ['switch', 'toggle', 'togglebutton'],
   checkbox: ['checkbox'],
   slider: ['slider', 'seekbar'],
   list: ['table', 'collectionview', 'listview', 'recyclerview', 'scrollview', 'reactscrollview'],
