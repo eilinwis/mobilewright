@@ -141,12 +141,14 @@ These timeouts apply only when using the `mobilenext` driver.
 Cloud devices are allocated from a shared pool. Under load, a device may not be immediately available. This timeout limits how long Mobilewright waits before giving up.
 
 ```ts
+import { defineConfig } from 'mobilewright';
+import { MobileNextDriver } from '@mobilewright/driver-mobilenext';
+
 export default defineConfig({
-  driver: {
-    type: 'mobilenext',
+  driver: new MobileNextDriver({
     apiKey: process.env.MOBILENEXT_API_KEY,
     allocationTimeout: 15 * 60_000, // 15 minutes
-  },
+  }),
 });
 ```
 
@@ -155,13 +157,15 @@ export default defineConfig({
 When `testResult` is configured, Mobilewright uploads the test report to mobilenext.ai after the run. This timeout limits how long that upload may take.
 
 ```ts
+import { defineConfig } from 'mobilewright';
+import { MobileNextDriver } from '@mobilewright/driver-mobilenext';
+
 export default defineConfig({
-  driver: {
-    type: 'mobilenext',
+  driver: new MobileNextDriver({
     apiKey: process.env.MOBILENEXT_API_KEY,
     testResult: { uploadReport: 'on' },
     uploadTimeout: 2 * 60_000, // 2 minutes
-  },
+  }),
 });
 ```
 
@@ -172,6 +176,7 @@ export default defineConfig({
 ```ts
 // mobilewright.config.ts
 import { defineConfig } from 'mobilewright';
+import { MobileNextDriver } from '@mobilewright/driver-mobilenext';
 
 export default defineConfig({
   timeout: 60_000,
@@ -187,12 +192,11 @@ export default defineConfig({
     timeout: 10_000,
   },
 
-  driver: {
-    type: 'mobilenext',
+  driver: new MobileNextDriver({
     apiKey: process.env.MOBILENEXT_API_KEY,
     allocationTimeout: 15 * 60_000,
     uploadTimeout: 2 * 60_000,
     testResult: { uploadReport: 'on-failure' },
-  },
+  }),
 });
 ```

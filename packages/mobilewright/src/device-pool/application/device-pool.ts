@@ -1,14 +1,14 @@
+import type { MobilewrightDriver } from '@mobilewright/protocol';
 import { DeviceSlot } from '../domain/device-slot.js';
 import { Allocation } from '../domain/allocation.js';
 import { NoDeviceAvailableError } from './ports.js';
 import type {
   AllocationCriteria,
   AllocationHandle,
-  DeviceAllocator,
 } from './ports.js';
 
 export interface DevicePoolOptions {
-  allocator: DeviceAllocator;
+  driver: MobilewrightDriver;
   maxSlots: number;
   /** Per-allocation timeout in ms. Default 600_000 (10 min). */
   allocationTimeoutMs?: number;
@@ -21,7 +21,7 @@ interface Waiter {
 }
 
 export class DevicePool {
-  private readonly allocator: DeviceAllocator;
+  private readonly driver: MobilewrightDriver;
   private readonly maxSlots: number;
   private readonly allocationTimeoutMs: number;
   private readonly slots: DeviceSlot[] = [];
@@ -31,7 +31,7 @@ export class DevicePool {
   private isShutdown = false;
 
   constructor(options: DevicePoolOptions) {
-    this.allocator = options.allocator;
+    this.driver = options.driver;
     this.maxSlots = options.maxSlots;
     this.allocationTimeoutMs = options.allocationTimeoutMs ?? 600_000;
   }
@@ -62,10 +62,11 @@ export class DevicePool {
     const releases: Promise<void>[] = [];
     for (const slot of this.slots) {
       if (slot.state !== 'allocating' && slot.deviceId !== undefined) {
-        releases.push(this.allocator.release(slot.deviceId).catch(() => {}));
+        releases.push(this.driver.release(slot.deviceId).catch(() => {}));
       }
     }
     await Promise.all(releases);
+    await this.driver.dispose?.().catch(() => {});
     this.slots.length = 0;
     this.allocations.clear();
   }
@@ -149,29 +150,40 @@ export class DevicePool {
   private async startAllocationForWaiter(waiter: Waiter): Promise<void> {
     const slot = new DeviceSlot();
     this.slots.push(slot);
-    const slotIndex = this.slots.length - 1;
     this.inFlightWaiters.add(waiter);
 
     const abortController = new AbortController();
     const timer = setTimeout(() => abortController.abort(), this.allocationTimeoutMs);
 
+    // Raced independently of `signal`: a driver that ignores the abort signal (hangs or
+    // resolves anyway) must not keep the waiter/slot alive past allocationTimeoutMs.
+    const allocatePromise = this.driver.allocate(waiter.criteria, this.takenDeviceIds(), abortController.signal);
+    const timeoutError = new Error(`device allocation timed out after ${this.allocationTimeoutMs}ms`);
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      abortController.signal.addEventListener('abort', () => reject(timeoutError), { once: true });
+    });
+
     let result;
     try {
-      result = await this.allocator.allocate(
-        waiter.criteria,
-        this.takenDeviceIds(),
-        abortController.signal,
-      );
+      result = await Promise.race([allocatePromise, timeoutPromise]);
     } catch (err) {
       clearTimeout(timer);
       if (!this.inFlightWaiters.delete(waiter)) {
         // Shutdown already rejected this waiter.
         return;
       }
-      this.slots.splice(slotIndex, 1);
-      if (abortController.signal.aborted) {
-        waiter.reject(new Error(`device allocation timed out after ${this.allocationTimeoutMs}ms`));
+      // Splice by current identity, not a captured index — concurrent allocations for
+      // other waiters may have already spliced this.slots and shifted positions.
+      const currentIndex = this.slots.indexOf(slot);
+      if (currentIndex !== -1) {
+        this.slots.splice(currentIndex, 1);
+      }
+      if (err === timeoutError) {
+        waiter.reject(timeoutError);
         this.pump();
+        // The driver may still resolve after the timeout despite the abort — release
+        // whatever it returns instead of leaking it or publishing it to a moved-on waiter.
+        allocatePromise.then((late) => this.driver.release(late.deviceId).catch(() => {})).catch(() => {});
         return;
       }
       // NoDeviceAvailableError is a temporary condition: all matching devices
@@ -194,7 +206,7 @@ export class DevicePool {
     clearTimeout(timer);
     if (!this.inFlightWaiters.delete(waiter)) {
       // Shutdown already rejected this waiter; just discard the device.
-      this.allocator.release(result.deviceId).catch(() => {});
+      this.driver.release(result.deviceId).catch(() => {});
       return;
     }
     slot.markAvailable(result.deviceId, result.platform, result.driver, result.model, result.osVersion, result.type);
