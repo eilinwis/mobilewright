@@ -1,4 +1,5 @@
-## [Unreleased]
+## [0.0.53] (2026-08-13)
+* Feat: filter device allocation by `deviceType` (simulator/emulator/real) and `osVersion` constraint expressions like `"17"` or `">=17 <19"` ([#269](https://github.com/mobile-next/mobilewright/pull/269))
 * Feat: accept driver instances instead of `{type, ...}` config objects ([#260](https://github.com/mobile-next/mobilewright/pull/260)); legacy config objects are converted automatically with a deprecation warning ([#267](https://github.com/mobile-next/mobilewright/pull/267))
 * Feat: drivers can observe the test run via `TestObserver` lifecycle hooks (`onRunStart`, `onTestEnd`, `onRunEnd`) ([#267](https://github.com/mobile-next/mobilewright/pull/267))
 * Fix: screen and device actions (`screenshot`, `swipe`, `launchApp`, `terminateApp`, …) now appear as steps in the test report ([#267](https://github.com/mobile-next/mobilewright/pull/267))
