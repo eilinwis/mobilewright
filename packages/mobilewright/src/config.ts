@@ -1,10 +1,20 @@
 import { access } from 'node:fs/promises';
+import { mkdtempSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import type { MobilewrightDriver } from '@mobilewright/protocol';
+import { MobilecliDriver } from '@mobilewright/driver-mobilecli';
+import { MobileNextDriver, type MobileNextDriverOptions } from '@mobilewright/driver-mobilenext';
+import { setActiveDriver } from './driver-registry.js';
 
 const _require = createRequire(import.meta.url);
+
+type ReporterEntry = [string] | [string, unknown];
+
+/** Pre-0.0.53 driver config shape: `{ type: 'mobilenext' | 'mobilecli', ...options }`. */
+type LegacyDriverConfig = { type: string } & Record<string, unknown>;
 
 // ─── Project ──────────────────────────────────────────────────────
 
@@ -125,9 +135,8 @@ export function toArray<T>(value: T | T[] | undefined): T[] {
   return Array.isArray(value) ? value : [value];
 }
 
-function normalizeReporters(
-  reporter: MobilewrightConfig['reporter'],
-): Array<[string] | [string, unknown]> {
+/** Normalizes `MobilewrightConfig['reporter']` into Playwright's array-of-tuples shape. */
+function normalizeReporters(reporter: MobilewrightConfig['reporter']): ReporterEntry[] {
   if (!reporter) {
     return [];
   }
@@ -137,22 +146,109 @@ function normalizeReporters(
   return reporter;
 }
 
-/** Auto-injects reporter entries the configured driver wants (e.g. mobile-next's results upload). */
-function injectDriverReporters(config: MobilewrightConfig): MobilewrightConfig {
-  const extra = config.driver?.configureReporting?.();
-  if (!extra) {
+/**
+ * Mirrors Playwright's own resolution of the JSON reporter's output file from
+ * env vars, for a `json` reporter entry that has no explicit `outputFile`:
+ * `PLAYWRIGHT_JSON_OUTPUT_FILE`, else `PLAYWRIGHT_JSON_OUTPUT_DIR` /
+ * `PLAYWRIGHT_JSON_OUTPUT_NAME` (dir defaults to cwd). Returns undefined when
+ * none are set, meaning Playwright would write to stdout instead of a file.
+ */
+function resolvePlaywrightJsonEnvPath(): string | undefined {
+  const explicitFile = process.env['PLAYWRIGHT_JSON_OUTPUT_FILE'];
+  if (explicitFile) {
+    return resolve(process.cwd(), explicitFile);
+  }
+  const name = process.env['PLAYWRIGHT_JSON_OUTPUT_NAME'];
+  if (!name) {
+    return undefined;
+  }
+  const dir = process.env['PLAYWRIGHT_JSON_OUTPUT_DIR'] ?? '.';
+  return resolve(process.cwd(), dir, name);
+}
+
+/**
+ * Injects the observer shim reporter (and, when needed, a `json` reporter to
+ * feed it) into `config.reporter` — only when the configured driver exposes
+ * a `TestObserver`. See the JSON-path merge rules in
+ * docs/superpowers/specs/2026-08-13-driver-test-observer-design.md.
+ */
+function injectObserverReporter(config: MobilewrightConfig): MobilewrightConfig {
+  if (!config.driver?.observer) {
     return config;
   }
 
+  const userReporters = normalizeReporters(config.reporter);
+  const jsonEntry = userReporters.find(([name]) => name === 'json');
+
+  let jsonResultsPath: string | undefined;
+  if (jsonEntry) {
+    const jsonOptions = jsonEntry[1] as { outputFile?: string } | undefined;
+    const userOutputFile = jsonOptions?.outputFile;
+    if (userOutputFile === undefined) {
+      jsonResultsPath = resolvePlaywrightJsonEnvPath();
+    } else if (isAbsolute(userOutputFile)) {
+      jsonResultsPath = userOutputFile;
+    }
+    // A relative outputFile is resolved by Playwright against the config
+    // directory, which is unknowable here — fall through and write our own
+    // copy instead of guessing.
+  }
+
+  let injectedJson: ReporterEntry | undefined;
+  let cleanupJsonResults = false;
+  if (jsonResultsPath === undefined) {
+    // mkdtemp creates the directory with 0o700 — the report stays private on
+    // shared machines. The shim removes it after the run.
+    jsonResultsPath = join(mkdtempSync(join(tmpdir(), 'mobilewright-results-')), 'results.json');
+    injectedJson = ['json', { outputFile: jsonResultsPath }];
+    cleanupJsonResults = true;
+  }
+
+  const baseReporters: ReporterEntry[] = userReporters.length > 0 ? userReporters : [['list']];
+  const shimEntry: ReporterEntry = [
+    _require.resolve('./observer-reporter.js'),
+    { jsonResultsPath, cleanupJsonResults },
+  ];
+
   return {
     ...config,
-    ...(extra.captureGitInfo && { captureGitInfo: { ...config.captureGitInfo, commit: true } }),
-    reporter: [...normalizeReporters(config.reporter), ...extra.reporters],
+    captureGitInfo: { commit: true, ...config.captureGitInfo },
+    reporter: [...baseReporters, ...(injectedJson ? [injectedJson] : []), shimEntry],
   };
+}
+
+function isDriverInstance(driver: unknown): driver is MobilewrightDriver {
+  return typeof (driver as MobilewrightDriver | undefined)?.allocate === 'function';
+}
+
+/** Converts a legacy `{ type, ... }` driver config object into a driver instance, with a deprecation warning. */
+function resolveLegacyDriver(legacy: LegacyDriverConfig): MobilewrightDriver {
+  const { type, ...options } = legacy;
+  console.warn(
+    `[mobilewright] Deprecated: \`driver: { type: '${type}', ... }\` config objects will stop working in a future release — ` +
+    'pass a driver instance instead, e.g. `new MobileNextDriver({ apiKey })`.',
+  );
+  switch (type) {
+    case 'mobilenext':
+    case 'mobile-use':
+      return new MobileNextDriver(options as MobileNextDriverOptions);
+    case 'mobilecli':
+      return new MobilecliDriver(options);
+    default:
+      throw new Error(
+        `defineConfig: unknown driver type "${type}". Pass a driver instance instead, e.g. \`new MobileNextDriver({ apiKey })\`.`,
+      );
+  }
 }
 
 /** Type-safe config helper for mobilewright.config.ts files. */
 export function defineConfig(config: MobilewrightConfig): MobilewrightConfig {
+  let driver = config.driver;
+  if (driver && !isDriverInstance(driver)) {
+    driver = resolveLegacyDriver(driver as unknown as LegacyDriverConfig);
+  }
+  setActiveDriver(driver);
+
   const ourSetup = _require.resolve('./device-pool/setup.js');
   const ourTeardown = _require.resolve('./device-pool/teardown.js');
   const userSetups = toArray(config.globalSetup);
@@ -161,11 +257,12 @@ export function defineConfig(config: MobilewrightConfig): MobilewrightConfig {
   const base: MobilewrightConfig = {
     workers: 1,
     ...config,
+    ...(driver && { driver }),
     globalSetup: userSetups.length > 0 ? [ourSetup, ...userSetups] : ourSetup,
     globalTeardown: userTeardowns.length > 0 ? [...userTeardowns, ourTeardown] : ourTeardown,
   };
 
-  return injectDriverReporters(base);
+  return injectObserverReporter(base);
 }
 
 const CONFIG_FILES = [

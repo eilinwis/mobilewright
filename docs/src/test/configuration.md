@@ -77,7 +77,28 @@ driver: new MobileNextDriver({
 })
 ```
 
-With the `MobileNextDriver`, test results are uploaded to mobilenext.ai automatically unless you set `testResult: { uploadReport: 'off' }`.
+## Reporting
+
+With the `MobileNextDriver`, test results are uploaded to mobilenext.ai automatically after
+the run — no reporter configuration needed. Control it through the driver's `testResult`
+option:
+
+```ts
+import { defineConfig } from 'mobilewright';
+import { MobileNextDriver } from '@mobilewright/driver-mobilenext';
+
+export default defineConfig({
+  driver: new MobileNextDriver({
+    apiKey: process.env.MOBILENEXT_API_KEY,
+    testResult: { uploadReport: 'on' }, // 'on' | 'off' | 'on-failure' (default: 'on')
+    uploadTimeout: 60_000, // ms, default: none
+  }),
+});
+```
+
+Your own `reporter:` entries are preserved — Mobilewright appends what it needs alongside
+them. If your config already includes a `json` reporter with an `outputFile`, that report is
+reused for the upload instead of writing a second one.
 
 ## Test runner
 
@@ -120,7 +141,7 @@ export default defineConfig({
 
 See [Timeouts](./timeouts.md) for how these interact and how to override them at call sites.
 
-## Reporting
+## Report metadata
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |

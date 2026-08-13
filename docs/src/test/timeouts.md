@@ -154,7 +154,7 @@ export default defineConfig({
 
 ### Upload timeout
 
-When `testResult` is configured, Mobilewright uploads the test report to mobilenext.ai after the run. This timeout limits how long that upload may take.
+With the `MobileNextDriver`, the test report is uploaded to mobilenext.ai after the run — unless the `testResult.uploadReport` policy disables it (`'off'`) or limits it to failed runs (`'on-failure'`); see [Reporting](./configuration.md#reporting). This timeout limits how long that upload may take.
 
 ```ts
 import { defineConfig } from 'mobilewright';
@@ -163,7 +163,6 @@ import { MobileNextDriver } from '@mobilewright/driver-mobilenext';
 export default defineConfig({
   driver: new MobileNextDriver({
     apiKey: process.env.MOBILENEXT_API_KEY,
-    testResult: { uploadReport: 'on' },
     uploadTimeout: 2 * 60_000, // 2 minutes
   }),
 });
@@ -196,7 +195,6 @@ export default defineConfig({
     apiKey: process.env.MOBILENEXT_API_KEY,
     allocationTimeout: 15 * 60_000,
     uploadTimeout: 2 * 60_000,
-    testResult: { uploadReport: 'on-failure' },
   }),
 });
 ```

@@ -1,10 +1,7 @@
 import { createReadStream, openSync, readSync, closeSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename } from 'node:path';
 import { Transform } from 'node:stream';
-import { createRequire } from 'node:module';
-import { randomUUID } from 'node:crypto';
-import os from 'node:os';
 import createDebug from 'debug';
 import type {
   AllocatedDevice,
@@ -18,26 +15,25 @@ import type {
   HardwareButton,
   LaunchOptions,
   ListDevicesOptions,
-  MobilewrightDriver,
+  MobilewrightSession,
+  DeviceAllocator,
   Orientation,
   Platform,
   RecordingOptions,
   RecordingResult,
-  ReporterEntry,
   ScreenSize,
   ScreenshotOptions,
   Session,
   SwipeDirection,
   SwipeOptions,
+  TestObserver,
   ViewNode,
 } from '@mobilewright/protocol';
 import { RpcClient } from './rpc-client.js';
 import { FleetApiClient, type DeviceFilter } from './fleet-api.js';
-import type { MobileNextTestResultConfig } from './reporter.js';
+import { MobileNextTestObserver, type MobileNextTestResultConfig } from './observer.js';
 
 export const DEFAULT_URL = 'wss://api.mobilenext.ai/ws';
-
-const _require = createRequire(import.meta.url);
 
 // ─── RPC response types ───────────────────────────────────────
 
@@ -106,9 +102,9 @@ export interface MobileNextDriverOptions {
   apiUrl?: string;
   /** Timeout waiting for a cloud device to be allocated from the pool, in ms. Default: 300000 (5 min). */
   allocationTimeout?: number;
-  /** Test-result upload options for the auto-injected upload reporter. Omit to use defaults ('on'). */
+  /** Controls automatic test-result upload to mobilenext after each run. Omit to upload on every run. */
   testResult?: MobileNextTestResultConfig;
-  /** Timeout for uploading test results to mobilenext.ai, in ms. Default: none. */
+  /** Timeout for the entire report-upload operation, in ms. */
   uploadTimeout?: number;
 }
 
@@ -205,13 +201,15 @@ interface ActiveSession {
 
 const debug = createDebug('mw:driver-mobilenext');
 
-export class MobileNextDriver implements MobilewrightDriver {
+export class MobileNextDriver implements MobilewrightSession, DeviceAllocator {
   private session: ActiveSession | null = null;
   private readonly options: MobileNextDriverOptions;
   private readonly fleetClient: FleetApiClient;
   private fleetSessionPromise: Promise<string> | null = null;
   // serial -> the fleet session it was allocated in, needed to release it later.
   private readonly fleetSessionBySerial = new Map<string, string>();
+  /** Test-lifecycle observer that uploads results to mobilenext; undefined when uploading is disabled. */
+  readonly observer: TestObserver | undefined;
 
   constructor(options: MobileNextDriverOptions = {}) {
     if (options.apiKey && options.apiUrl && !options.apiUrl.startsWith('https://')) {
@@ -223,6 +221,13 @@ export class MobileNextDriver implements MobilewrightDriver {
       apiUrl: options.apiUrl,
       allocationTimeout: options.allocationTimeout,
     });
+    this.observer = options.testResult?.uploadReport === 'off'
+      ? undefined
+      : new MobileNextTestObserver({
+        apiKey: options.apiKey ?? '',
+        testResult: options.testResult ?? {},
+        uploadTimeout: options.uploadTimeout,
+      });
   }
 
   // ─── Connection ──────────────────────────────────────────────
@@ -548,29 +553,6 @@ export class MobileNextDriver implements MobilewrightDriver {
       });
     }
     return this.fleetSessionPromise;
-  }
-
-  // ─── Reporting ──────────────────────────────────────────────
-
-  configureReporting(): { reporters: ReporterEntry[]; captureGitInfo?: boolean } | undefined {
-    if (this.options.testResult?.uploadReport === 'off') {
-      return undefined;
-    }
-    const jsonResultsPath = join(os.tmpdir(), `mobilewright-results-${randomUUID()}.json`);
-    const uploadReporterPath = _require.resolve('./reporter.js');
-
-    return {
-      captureGitInfo: true,
-      reporters: [
-        ['json', { outputFile: jsonResultsPath }],
-        [uploadReporterPath, {
-          apiKey: this.options.apiKey ?? '',
-          jsonResultsPath,
-          testResult: this.options.testResult ?? {},
-          uploadTimeout: this.options.uploadTimeout,
-        }],
-      ],
-    };
   }
 
   // ─── Helpers ────────────────────────────────────────────────
